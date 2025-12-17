@@ -180,33 +180,54 @@ struct ChatView: View {
     // MARK: - Header
 
     @State private var isHeaderHovered = false
+    @State private var isITermHovered = false
 
     private var chatHeader: some View {
-        Button {
-            viewModel.exitChat()
-        } label: {
-            HStack(spacing: 8) {
-                Image(systemName: "chevron.left")
-                    .font(.system(size: 14, weight: .semibold))
-                    .foregroundColor(.white.opacity(isHeaderHovered ? 1.0 : 0.6))
-                    .frame(width: 24, height: 24)
+        HStack(spacing: 0) {
+            // Back button
+            Button {
+                viewModel.exitChat()
+            } label: {
+                HStack(spacing: 8) {
+                    Image(systemName: "chevron.left")
+                        .font(.system(size: 14, weight: .semibold))
+                        .foregroundColor(.white.opacity(isHeaderHovered ? 1.0 : 0.6))
+                        .frame(width: 24, height: 24)
 
-                Text(session.displayTitle)
-                    .font(.system(size: 14, weight: .semibold))
-                    .foregroundColor(.white.opacity(isHeaderHovered ? 1.0 : 0.85))
-                    .lineLimit(1)
+                    Text(session.displayTitle)
+                        .font(.system(size: 14, weight: .semibold))
+                        .foregroundColor(.white.opacity(isHeaderHovered ? 1.0 : 0.85))
+                        .lineLimit(1)
 
-                Spacer()
+                    Spacer()
+                }
+                .padding(.horizontal, 12)
+                .padding(.vertical, 10)
+                .background(
+                    RoundedRectangle(cornerRadius: 8)
+                        .fill(isHeaderHovered ? Color.white.opacity(0.08) : Color.clear)
+                )
             }
-            .padding(.horizontal, 12)
-            .padding(.vertical, 10)
-            .background(
-                RoundedRectangle(cornerRadius: 8)
-                    .fill(isHeaderHovered ? Color.white.opacity(0.08) : Color.clear)
-            )
+            .buttonStyle(.plain)
+            .onHover { isHeaderHovered = $0 }
+
+            // Open in iTerm button
+            Button {
+                openInITerm()
+            } label: {
+                Image(systemName: "terminal")
+                    .font(.system(size: 12, weight: .medium))
+                    .foregroundColor(.white.opacity(isITermHovered ? 1.0 : 0.5))
+                    .frame(width: 32, height: 32)
+                    .background(
+                        RoundedRectangle(cornerRadius: 6)
+                            .fill(isITermHovered ? Color.white.opacity(0.08) : Color.clear)
+                    )
+            }
+            .buttonStyle(.plain)
+            .onHover { isITermHovered = $0 }
+            .help("Open in iTerm")
         }
-        .buttonStyle(.plain)
-        .onHover { isHeaderHovered = $0 }
         .padding(.horizontal, 8)
         .padding(.vertical, 4)
         .background(Color.black.opacity(0.2))
@@ -221,6 +242,60 @@ struct ChatView: View {
             .allowsHitTesting(false)
         }
         .zIndex(1) // Render above message list
+    }
+
+    /// Open iTerm to the session's working directory or attach to tmux session
+    private func openInITerm() {
+        Task {
+            await openITermSession()
+        }
+    }
+
+    private func openITermSession() async {
+        let cwd = session.cwd
+
+        // If session is in tmux, try to attach to the tmux session
+        if session.isInTmux, let tty = session.tty {
+            // Find the tmux session
+            if let target = await findTmuxTarget(tty: tty) {
+                // Use AppleScript to open iTerm and attach to tmux
+                let script = """
+                tell application "iTerm"
+                    activate
+                    create window with default profile
+                    tell current session of current window
+                        write text "tmux attach -t \(target.sessionName)"
+                    end tell
+                end tell
+                """
+                runAppleScript(script)
+                return
+            }
+        }
+
+        // Fallback: just open iTerm to the working directory
+        let script = """
+        tell application "iTerm"
+            activate
+            create window with default profile
+            tell current session of current window
+                write text "cd '\(cwd.replacingOccurrences(of: "'", with: "'\\''"))'"
+            end tell
+        end tell
+        """
+        runAppleScript(script)
+    }
+
+    private func runAppleScript(_ script: String) {
+        DispatchQueue.global(qos: .userInitiated).async {
+            var error: NSDictionary?
+            if let appleScript = NSAppleScript(source: script) {
+                appleScript.executeAndReturnError(&error)
+                if let error = error {
+                    print("AppleScript error: \(error)")
+                }
+            }
+        }
     }
 
     /// Whether the session is currently processing
@@ -358,37 +433,62 @@ struct ChatView: View {
         session.isInTmux && session.tty != nil
     }
 
+    /// Dynamic height for multi-line input
+    @State private var inputHeight: CGFloat = 36
+
     private var inputBar: some View {
-        HStack(spacing: 10) {
-            TextField(canSendMessages ? "Message Claude..." : "Open Claude Code in tmux to enable messaging", text: $inputText)
-                .textFieldStyle(.plain)
-                .font(.system(size: 13))
-                .foregroundColor(canSendMessages ? .white : .white.opacity(0.4))
-                .focused($isInputFocused)
-                .disabled(!canSendMessages)
-                .padding(.horizontal, 14)
-                .padding(.vertical, 10)
-                .background(
-                    RoundedRectangle(cornerRadius: 20)
-                        .fill(Color.white.opacity(canSendMessages ? 0.08 : 0.04))
-                        .overlay(
-                            RoundedRectangle(cornerRadius: 20)
-                                .strokeBorder(Color.white.opacity(0.1), lineWidth: 1)
-                        )
-                )
-                .onSubmit {
-                    sendMessage()
+        HStack(alignment: .bottom, spacing: 10) {
+            // Multi-line input with TextEditor
+            ZStack(alignment: .topLeading) {
+                // Placeholder
+                if inputText.isEmpty {
+                    Text(canSendMessages ? "Message Claude... (⌘↩ to send)" : "Open Claude Code in tmux to enable messaging")
+                        .font(.system(size: 13))
+                        .foregroundColor(.white.opacity(0.3))
+                        .padding(.horizontal, 14)
+                        .padding(.vertical, 10)
+                        .allowsHitTesting(false)
                 }
+
+                // Text input
+                TextEditor(text: $inputText)
+                    .font(.system(size: 13))
+                    .foregroundColor(canSendMessages ? .white : .white.opacity(0.4))
+                    .scrollContentBackground(.hidden)
+                    .focused($isInputFocused)
+                    .disabled(!canSendMessages)
+                    .padding(.horizontal, 10)
+                    .padding(.vertical, 6)
+                    .frame(minHeight: 36, maxHeight: 120)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .onKeyPress(.return, phases: .down) { press in
+                        // Cmd+Enter or Ctrl+Enter to send
+                        if press.modifiers.contains(.command) || press.modifiers.contains(.control) {
+                            sendMessage()
+                            return .handled
+                        }
+                        // Regular Enter adds newline (default behavior)
+                        return .ignored
+                    }
+            }
+            .background(
+                RoundedRectangle(cornerRadius: 16)
+                    .fill(Color.white.opacity(canSendMessages ? 0.08 : 0.04))
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 16)
+                            .strokeBorder(Color.white.opacity(0.1), lineWidth: 1)
+                    )
+            )
 
             Button {
                 sendMessage()
             } label: {
                 Image(systemName: "arrow.up.circle.fill")
                     .font(.system(size: 28))
-                    .foregroundColor(!canSendMessages || inputText.isEmpty ? .white.opacity(0.2) : .white.opacity(0.9))
+                    .foregroundColor(!canSendMessages || inputText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? .white.opacity(0.2) : .white.opacity(0.9))
             }
             .buttonStyle(.plain)
-            .disabled(!canSendMessages || inputText.isEmpty)
+            .disabled(!canSendMessages || inputText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
         }
         .padding(.horizontal, 16)
         .padding(.vertical, 12)

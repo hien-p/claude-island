@@ -20,6 +20,7 @@ struct NotchMenuView: View {
     @ObservedObject private var soundSelector = SoundSelector.shared
     @State private var hooksInstalled: Bool = false
     @State private var launchAtLogin: Bool = false
+    @State private var analyticsEnabled: Bool = false
 
     var body: some View {
         VStack(spacing: 4) {
@@ -78,6 +79,16 @@ struct NotchMenuView: View {
 
             AccessibilityRow(isEnabled: AXIsProcessTrusted())
 
+            // Analytics toggle
+            MenuToggleRow(
+                icon: "chart.bar",
+                label: "Share Analytics",
+                isOn: analyticsEnabled
+            ) {
+                analyticsEnabled.toggle()
+                AppSettings.analyticsEnabled = analyticsEnabled
+            }
+
             Divider()
                 .background(Color.white.opacity(0.08))
                 .padding(.vertical, 4)
@@ -122,6 +133,7 @@ struct NotchMenuView: View {
     private func refreshStates() {
         hooksInstalled = HookInstaller.isInstalled()
         launchAtLogin = SMAppService.mainApp.status == .enabled
+        analyticsEnabled = AppSettings.analyticsEnabled
         screenSelector.refreshScreens()
     }
 }

@@ -195,6 +195,9 @@ struct NotchView: View {
                 isVisible = true
             }
         }
+        .onReceive(NotificationCenter.default.publisher(for: NSNotification.Name("OpenNotchWithChatFocus"))) { _ in
+            handleGlobalHotkey()
+        }
         .onChange(of: viewModel.status) { oldStatus, newStatus in
             handleStatusChange(from: oldStatus, to: newStatus)
         }
@@ -481,6 +484,29 @@ struct NotchView: View {
         }
 
         previousWaitingForInputIds = currentIds
+    }
+
+    /// Handle global hotkey (Cmd+Shift+C) - open notch and focus chat
+    private func handleGlobalHotkey() {
+        isVisible = true
+
+        // If there's an active session, open its chat
+        if let activeSession = sessionMonitor.instances.first(where: { $0.phase == .processing || $0.phase == .waitingForInput || $0.phase.isWaitingForApproval }) {
+            viewModel.notchOpen(reason: .click)
+            // Small delay to let the notch open, then switch to chat
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
+                viewModel.openChat(for: activeSession)
+            }
+        } else if let firstSession = sessionMonitor.instances.first {
+            // Open first available session
+            viewModel.notchOpen(reason: .click)
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
+                viewModel.openChat(for: firstSession)
+            }
+        } else {
+            // No sessions, just open the notch
+            viewModel.notchOpen(reason: .click)
+        }
     }
 
     /// Determine if notification sound should play for the given sessions

@@ -12,6 +12,21 @@ import os.log
 /// Logger for hook socket server
 private let logger = Logger(subsystem: "com.claudeisland", category: "Hooks")
 
+/// Configuration for socket server
+enum SocketConfig {
+    /// Timeout for reading client data (in seconds)
+    static let clientReadTimeout: TimeInterval = 5.0
+
+    /// Maximum concurrent connections
+    static let maxConcurrentConnections = 10
+
+    /// Tool ID cache TTL (in seconds) - entries older than this are cleaned up
+    static let cacheEntryTTL: TimeInterval = 60.0
+
+    /// Cache cleanup interval (in seconds)
+    static let cacheCleanupInterval: TimeInterval = 30.0
+}
+
 /// Event received from Claude Code hooks
 struct HookEvent: Codable, Sendable {
     let sessionId: String
@@ -97,6 +112,12 @@ struct PendingPermission: Sendable {
     let receivedAt: Date
 }
 
+/// Cached tool ID with timestamp for TTL-based cleanup
+struct CachedToolId {
+    let toolUseId: String
+    let cachedAt: Date
+}
+
 /// Callback for hook events
 typealias HookEventHandler = @Sendable (HookEvent) -> Void
 
@@ -120,10 +141,17 @@ class HookSocketServer {
     private let permissionsLock = NSLock()
 
     /// Cache tool_use_id from PreToolUse to correlate with PermissionRequest
-    /// Key: "sessionId:toolName:serializedInput" -> Queue of tool_use_ids (FIFO)
+    /// Key: "sessionId:toolName:serializedInput" -> Queue of CachedToolIds (FIFO)
     /// PermissionRequest events don't include tool_use_id, so we cache from PreToolUse
-    private var toolUseIdCache: [String: [String]] = [:]
+    private var toolUseIdCache: [String: [CachedToolId]] = [:]
     private let cacheLock = NSLock()
+
+    /// Timer for periodic cache cleanup
+    private var cacheCleanupTimer: DispatchSourceTimer?
+
+    /// Active connection count for rate limiting
+    private var activeConnections: Int = 0
+    private let connectionsLock = NSLock()
 
     private init() {}
 
@@ -198,6 +226,9 @@ class HookSocketServer {
             }
         }
         acceptSource?.resume()
+
+        // Start periodic cache cleanup
+        startCacheCleanupTimer()
     }
 
     /// Stop the socket server
@@ -206,12 +237,21 @@ class HookSocketServer {
         acceptSource = nil
         unlink(Self.socketPath)
 
+        // Stop cache cleanup timer
+        cacheCleanupTimer?.cancel()
+        cacheCleanupTimer = nil
+
         permissionsLock.lock()
         for (_, pending) in pendingPermissions {
             close(pending.clientSocket)
         }
         pendingPermissions.removeAll()
         permissionsLock.unlock()
+
+        // Clear cache
+        cacheLock.lock()
+        toolUseIdCache.removeAll()
+        cacheLock.unlock()
     }
 
     /// Respond to a pending permission request by toolUseId
@@ -304,17 +344,18 @@ class HookSocketServer {
         return "\(sessionId):\(toolName ?? "unknown"):\(inputStr)"
     }
 
-    /// Cache tool_use_id from PreToolUse event (FIFO queue per key)
+    /// Cache tool_use_id from PreToolUse event (FIFO queue per key) with timestamp
     private func cacheToolUseId(event: HookEvent) {
         guard let toolUseId = event.toolUseId else { return }
 
         let key = cacheKey(sessionId: event.sessionId, toolName: event.tool, toolInput: event.toolInput)
+        let cached = CachedToolId(toolUseId: toolUseId, cachedAt: Date())
 
         cacheLock.lock()
         if toolUseIdCache[key] == nil {
             toolUseIdCache[key] = []
         }
-        toolUseIdCache[key]?.append(toolUseId)
+        toolUseIdCache[key]?.append(cached)
         cacheLock.unlock()
 
         logger.debug("Cached tool_use_id for \(event.sessionId.prefix(8), privacy: .public) tool:\(event.tool ?? "?", privacy: .public) id:\(toolUseId.prefix(12), privacy: .public)")
@@ -331,7 +372,7 @@ class HookSocketServer {
             return nil
         }
 
-        let toolUseId = queue.removeFirst()
+        let cached = queue.removeFirst()
 
         if queue.isEmpty {
             toolUseIdCache.removeValue(forKey: key)
@@ -339,8 +380,8 @@ class HookSocketServer {
             toolUseIdCache[key] = queue
         }
 
-        logger.debug("Retrieved cached tool_use_id for \(event.sessionId.prefix(8), privacy: .public) tool:\(event.tool ?? "?", privacy: .public) id:\(toolUseId.prefix(12), privacy: .public)")
-        return toolUseId
+        logger.debug("Retrieved cached tool_use_id for \(event.sessionId.prefix(8), privacy: .public) tool:\(event.tool ?? "?", privacy: .public) id:\(cached.toolUseId.prefix(12), privacy: .public)")
+        return cached.toolUseId
     }
 
     /// Clean up cache entries for a session (on session end)
@@ -357,11 +398,85 @@ class HookSocketServer {
         }
     }
 
+    /// Start periodic timer to clean up stale cache entries
+    private func startCacheCleanupTimer() {
+        cacheCleanupTimer = DispatchSource.makeTimerSource(queue: queue)
+        cacheCleanupTimer?.schedule(
+            deadline: .now() + SocketConfig.cacheCleanupInterval,
+            repeating: SocketConfig.cacheCleanupInterval
+        )
+        cacheCleanupTimer?.setEventHandler { [weak self] in
+            self?.cleanupStaleCacheEntries()
+        }
+        cacheCleanupTimer?.resume()
+        logger.debug("Cache cleanup timer started (interval: \(SocketConfig.cacheCleanupInterval)s)")
+    }
+
+    /// Remove cache entries older than TTL
+    private func cleanupStaleCacheEntries() {
+        let now = Date()
+        var removedCount = 0
+
+        cacheLock.lock()
+
+        for (key, queue) in toolUseIdCache {
+            // Filter out stale entries
+            let freshEntries = queue.filter { entry in
+                now.timeIntervalSince(entry.cachedAt) < SocketConfig.cacheEntryTTL
+            }
+
+            if freshEntries.isEmpty {
+                toolUseIdCache.removeValue(forKey: key)
+                removedCount += queue.count
+            } else if freshEntries.count < queue.count {
+                toolUseIdCache[key] = freshEntries
+                removedCount += queue.count - freshEntries.count
+            }
+        }
+
+        let cacheSize = toolUseIdCache.values.reduce(0) { $0 + $1.count }
+        cacheLock.unlock()
+
+        if removedCount > 0 {
+            logger.debug("Cache cleanup: removed \(removedCount) stale entries, \(cacheSize) remaining")
+        }
+    }
+
+    // MARK: - Rate Limiting
+
+    /// Increment active connections (returns false if at limit)
+    private func tryIncrementConnections() -> Bool {
+        connectionsLock.lock()
+        defer { connectionsLock.unlock() }
+
+        if activeConnections >= SocketConfig.maxConcurrentConnections {
+            logger.warning("Rate limit reached: \(activeConnections) active connections")
+            return false
+        }
+
+        activeConnections += 1
+        return true
+    }
+
+    /// Decrement active connections
+    private func decrementConnections() {
+        connectionsLock.lock()
+        activeConnections = max(0, activeConnections - 1)
+        connectionsLock.unlock()
+    }
+
     // MARK: - Private
 
     private func acceptConnection() {
         let clientSocket = accept(serverSocket, nil, nil)
         guard clientSocket >= 0 else { return }
+
+        // Rate limiting check
+        guard tryIncrementConnections() else {
+            logger.warning("Rejecting connection due to rate limit")
+            close(clientSocket)
+            return
+        }
 
         var nosigpipe: Int32 = 1
         setsockopt(clientSocket, SOL_SOCKET, SO_NOSIGPIPE, &nosigpipe, socklen_t(MemoryLayout<Int32>.size))
@@ -378,7 +493,9 @@ class HookSocketServer {
         var pollFd = pollfd(fd: clientSocket, events: Int16(POLLIN), revents: 0)
 
         let startTime = Date()
-        while Date().timeIntervalSince(startTime) < 0.5 {
+        let timeoutSeconds = SocketConfig.clientReadTimeout
+
+        while Date().timeIntervalSince(startTime) < timeoutSeconds {
             let pollResult = poll(&pollFd, 1, 50)
 
             if pollResult > 0 && (pollFd.revents & Int16(POLLIN)) != 0 {
@@ -400,8 +517,14 @@ class HookSocketServer {
             }
         }
 
+        // Check for timeout
+        if Date().timeIntervalSince(startTime) >= timeoutSeconds && allData.isEmpty {
+            logger.warning("Client read timeout after \(timeoutSeconds)s")
+        }
+
         guard !allData.isEmpty else {
             close(clientSocket)
+            decrementConnections()
             return
         }
 
@@ -410,6 +533,7 @@ class HookSocketServer {
         guard let event = try? JSONDecoder().decode(HookEvent.self, from: data) else {
             logger.warning("Failed to parse event: \(String(data: data, encoding: .utf8) ?? "?", privacy: .public)")
             close(clientSocket)
+            decrementConnections()
             return
         }
 
@@ -432,6 +556,7 @@ class HookSocketServer {
             } else {
                 logger.warning("Permission request missing tool_use_id for \(event.sessionId.prefix(8), privacy: .public) - no cache hit")
                 close(clientSocket)
+                decrementConnections()
                 eventHandler?(event)
                 return
             }
@@ -463,10 +588,12 @@ class HookSocketServer {
             pendingPermissions[toolUseId] = pending
             permissionsLock.unlock()
 
+            // Note: Don't decrement connections here - socket stays open for response
             eventHandler?(updatedEvent)
             return
         } else {
             close(clientSocket)
+            decrementConnections()
         }
 
         eventHandler?(event)
@@ -484,6 +611,7 @@ class HookSocketServer {
         let response = HookResponse(decision: decision, reason: reason)
         guard let data = try? JSONEncoder().encode(response) else {
             close(pending.clientSocket)
+            decrementConnections()
             return
         }
 
@@ -504,6 +632,7 @@ class HookSocketServer {
         }
 
         close(pending.clientSocket)
+        decrementConnections()
     }
 
     private func sendPermissionResponseBySession(sessionId: String, decision: String, reason: String?) {
@@ -525,6 +654,7 @@ class HookSocketServer {
         let response = HookResponse(decision: decision, reason: reason)
         guard let data = try? JSONEncoder().encode(response) else {
             close(pending.clientSocket)
+            decrementConnections()
             permissionFailureHandler?(sessionId, pending.toolUseId)
             return
         }
@@ -548,6 +678,7 @@ class HookSocketServer {
         }
 
         close(pending.clientSocket)
+        decrementConnections()
 
         if !writeSuccess {
             permissionFailureHandler?(sessionId, pending.toolUseId)

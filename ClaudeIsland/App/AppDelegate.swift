@@ -8,6 +8,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     private var windowManager: WindowManager?
     private var screenObserver: ScreenObserver?
     private var updateCheckTimer: Timer?
+    private var globalHotkeyMonitor: Any?
 
     static var shared: AppDelegate?
     let updater: SPUUpdater
@@ -59,6 +60,9 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             self?.handleScreenChange()
         }
 
+        // Register global hotkey (Cmd+Shift+C) to open notch and focus chat
+        registerGlobalHotkey()
+
         if updater.canCheckForUpdates {
             updater.checkForUpdates()
         }
@@ -79,6 +83,38 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         }
         updateCheckTimer?.invalidate()
         screenObserver = nil
+
+        // Remove global hotkey monitor
+        if let monitor = globalHotkeyMonitor {
+            NSEvent.removeMonitor(monitor)
+            globalHotkeyMonitor = nil
+        }
+    }
+
+    // MARK: - Global Hotkey
+
+    /// Register global keyboard shortcut (Cmd+Shift+C) to open notch and focus chat
+    private func registerGlobalHotkey() {
+        // Cmd+Shift+C
+        globalHotkeyMonitor = NSEvent.addGlobalMonitorForEvents(matching: .keyDown) { [weak self] event in
+            // Check for Cmd+Shift+C (keyCode 8 = 'C')
+            if event.modifierFlags.contains([.command, .shift]) && event.keyCode == 8 {
+                self?.handleGlobalHotkey()
+            }
+        }
+    }
+
+    /// Handle global hotkey press - open notch and focus chat input
+    private func handleGlobalHotkey() {
+        DispatchQueue.main.async { [weak self] in
+            guard let windowController = self?.windowController else { return }
+
+            // Post notification to open notch with chat focused
+            NotificationCenter.default.post(
+                name: NSNotification.Name("OpenNotchWithChatFocus"),
+                object: nil
+            )
+        }
     }
 
     // MARK: - Analytics (Privacy-respecting)
