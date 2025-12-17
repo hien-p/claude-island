@@ -526,6 +526,7 @@ struct NotchView: View {
 
             // Always auto-open notch when permission is needed
             if viewModel.status == .closed {
+                isVisible = true
                 viewModel.notchOpen(reason: .notification)
             }
         }
