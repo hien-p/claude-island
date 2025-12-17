@@ -524,9 +524,8 @@ struct NotchView: View {
                 }
             }
 
-            // Auto-open notch if terminal is not focused
-            if viewModel.status == .closed &&
-               !TerminalVisibilityDetector.isTerminalVisibleOnCurrentSpace() {
+            // Always auto-open notch when permission is needed
+            if viewModel.status == .closed {
                 viewModel.notchOpen(reason: .notification)
             }
         }
