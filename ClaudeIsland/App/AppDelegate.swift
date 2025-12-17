@@ -9,6 +9,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     private var screenObserver: ScreenObserver?
     private var updateCheckTimer: Timer?
     private var globalHotkeyMonitor: Any?
+    private var hotkeySettingsObserver: NSObjectProtocol?
 
     static var shared: AppDelegate?
     let updater: SPUUpdater
@@ -60,8 +61,17 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             self?.handleScreenChange()
         }
 
-        // Register global hotkey (Cmd+Shift+C) to open notch and focus chat
+        // Register global hotkey to open notch and focus chat
         registerGlobalHotkey()
+
+        // Listen for hotkey settings changes
+        hotkeySettingsObserver = NotificationCenter.default.addObserver(
+            forName: .hotkeySettingsChanged,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            self?.registerGlobalHotkey()
+        }
 
         if updater.canCheckForUpdates {
             updater.checkForUpdates()
@@ -89,16 +99,40 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             NSEvent.removeMonitor(monitor)
             globalHotkeyMonitor = nil
         }
+
+        // Remove settings observer
+        if let observer = hotkeySettingsObserver {
+            NotificationCenter.default.removeObserver(observer)
+            hotkeySettingsObserver = nil
+        }
     }
 
     // MARK: - Global Hotkey
 
-    /// Register global keyboard shortcut (Cmd+Shift+C) to open notch and focus chat
+    /// Register global keyboard shortcut based on user settings
     private func registerGlobalHotkey() {
-        // Cmd+Shift+C
+        // Remove existing monitor first
+        if let monitor = globalHotkeyMonitor {
+            NSEvent.removeMonitor(monitor)
+            globalHotkeyMonitor = nil
+        }
+
+        // Check if hotkey is enabled
+        guard AppSettings.hotkeyEnabled else { return }
+
+        // Get configured shortcut
+        let shortcut = AppSettings.globalHotkey
+
         globalHotkeyMonitor = NSEvent.addGlobalMonitorForEvents(matching: .keyDown) { [weak self] event in
-            // Check for Cmd+Shift+C (keyCode 8 = 'C')
-            if event.modifierFlags.contains([.command, .shift]) && event.keyCode == 8 {
+            // Check if modifiers match
+            var eventModifiers = KeyboardModifiers()
+            if event.modifierFlags.contains(.command) { eventModifiers.insert(.command) }
+            if event.modifierFlags.contains(.shift) { eventModifiers.insert(.shift) }
+            if event.modifierFlags.contains(.option) { eventModifiers.insert(.option) }
+            if event.modifierFlags.contains(.control) { eventModifiers.insert(.control) }
+
+            // Check if key and modifiers match
+            if event.keyCode == shortcut.keyCode && eventModifiers == shortcut.modifiers {
                 self?.handleGlobalHotkey()
             }
         }

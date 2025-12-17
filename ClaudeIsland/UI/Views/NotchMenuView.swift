@@ -21,6 +21,8 @@ struct NotchMenuView: View {
     @State private var hooksInstalled: Bool = false
     @State private var launchAtLogin: Bool = false
     @State private var analyticsEnabled: Bool = false
+    @State private var hotkeyEnabled: Bool = true
+    @State private var currentHotkey: KeyboardShortcut = .defaultShortcut
 
     var body: some View {
         VStack(spacing: 4) {
@@ -39,6 +41,10 @@ struct NotchMenuView: View {
             // Appearance settings
             ScreenPickerRow(screenSelector: screenSelector)
             SoundPickerRow(soundSelector: soundSelector)
+            HotkeyPickerRow(
+                isEnabled: $hotkeyEnabled,
+                currentHotkey: $currentHotkey
+            )
 
             Divider()
                 .background(Color.white.opacity(0.08))
@@ -134,7 +140,141 @@ struct NotchMenuView: View {
         hooksInstalled = HookInstaller.isInstalled()
         launchAtLogin = SMAppService.mainApp.status == .enabled
         analyticsEnabled = AppSettings.analyticsEnabled
+        hotkeyEnabled = AppSettings.hotkeyEnabled
+        currentHotkey = AppSettings.globalHotkey
         screenSelector.refreshScreens()
+    }
+}
+
+// MARK: - Hotkey Picker Row
+
+struct HotkeyPickerRow: View {
+    @Binding var isEnabled: Bool
+    @Binding var currentHotkey: KeyboardShortcut
+    @State private var isHovered = false
+    @State private var isRecording = false
+    @State private var localMonitor: Any?
+
+    var body: some View {
+        VStack(spacing: 0) {
+            // Main row
+            Button {
+                isEnabled.toggle()
+                AppSettings.hotkeyEnabled = isEnabled
+            } label: {
+                HStack(spacing: 10) {
+                    Image(systemName: "command")
+                        .font(.system(size: 12))
+                        .foregroundColor(textColor)
+                        .frame(width: 16)
+
+                    Text("Global Hotkey")
+                        .font(.system(size: 13, weight: .medium))
+                        .foregroundColor(textColor)
+
+                    Spacer()
+
+                    if isEnabled {
+                        // Show current shortcut as button to change
+                        Button {
+                            startRecording()
+                        } label: {
+                            Text(isRecording ? "Press keys..." : currentHotkey.displayString)
+                                .font(.system(size: 11, weight: .medium, design: .monospaced))
+                                .foregroundColor(isRecording ? TerminalColors.amber : .white.opacity(0.9))
+                                .padding(.horizontal, 8)
+                                .padding(.vertical, 4)
+                                .background(
+                                    RoundedRectangle(cornerRadius: 4)
+                                        .fill(isRecording ? TerminalColors.amber.opacity(0.2) : Color.white.opacity(0.15))
+                                )
+                        }
+                        .buttonStyle(.plain)
+                    } else {
+                        Circle()
+                            .fill(Color.white.opacity(0.3))
+                            .frame(width: 6, height: 6)
+                        Text("Off")
+                            .font(.system(size: 11))
+                            .foregroundColor(.white.opacity(0.4))
+                    }
+                }
+                .padding(.horizontal, 12)
+                .padding(.vertical, 10)
+                .background(
+                    RoundedRectangle(cornerRadius: 8)
+                        .fill(isHovered ? Color.white.opacity(0.08) : Color.clear)
+                )
+            }
+            .buttonStyle(.plain)
+            .onHover { isHovered = $0 }
+        }
+    }
+
+    private var textColor: Color {
+        .white.opacity(isHovered ? 1.0 : 0.7)
+    }
+
+    private func startRecording() {
+        isRecording = true
+
+        // Add local event monitor to capture key press
+        localMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { event in
+            // Get modifiers
+            var modifiers = KeyboardModifiers()
+            if event.modifierFlags.contains(.command) { modifiers.insert(.command) }
+            if event.modifierFlags.contains(.shift) { modifiers.insert(.shift) }
+            if event.modifierFlags.contains(.option) { modifiers.insert(.option) }
+            if event.modifierFlags.contains(.control) { modifiers.insert(.control) }
+
+            // Need at least one modifier
+            guard !modifiers.isEmpty else {
+                return event
+            }
+
+            // Get key character
+            let keyChar = event.charactersIgnoringModifiers?.uppercased() ?? ""
+            guard !keyChar.isEmpty else {
+                return event
+            }
+
+            // Ignore modifier-only keys
+            let ignoredKeyCodes: Set<UInt16> = [55, 56, 58, 59, 61, 62] // Cmd, Shift, Option, Ctrl variants
+            if ignoredKeyCodes.contains(event.keyCode) {
+                return event
+            }
+
+            // Create new shortcut
+            let newShortcut = KeyboardShortcut(
+                keyCode: event.keyCode,
+                modifiers: modifiers,
+                keyChar: keyChar
+            )
+
+            // Save it
+            currentHotkey = newShortcut
+            AppSettings.globalHotkey = newShortcut
+
+            // Stop recording
+            stopRecording()
+
+            return nil // Consume the event
+        }
+
+        // Auto-cancel after 5 seconds
+        DispatchQueue.main.asyncAfter(deadline: .now() + 5) {
+            if isRecording {
+                stopRecording()
+            }
+        }
+    }
+
+    private func stopRecording() {
+        isRecording = false
+        if let monitor = localMonitor {
+            NSEvent.removeMonitor(monitor)
+            localMonitor = nil
+        }
     }
 }
 
