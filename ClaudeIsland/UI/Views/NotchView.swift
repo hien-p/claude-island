@@ -573,13 +573,13 @@ struct NotchView: View {
             viewModel.notchOpen(reason: .click)
             // Small delay to let the notch open, then switch to chat
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
-                viewModel.openChat(for: activeSession)
+                viewModel.showChat(for: activeSession)
             }
         } else if let firstSession = sessionMonitor.instances.first {
             // Open first available session
             viewModel.notchOpen(reason: .click)
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
-                viewModel.openChat(for: firstSession)
+                viewModel.showChat(for: firstSession)
             }
         } else {
             // No sessions, just open the notch

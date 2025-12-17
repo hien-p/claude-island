@@ -264,7 +264,7 @@ struct ChatView: View {
                     activate
                     create window with default profile
                     tell current session of current window
-                        write text "tmux attach -t \(target.sessionName)"
+                        write text "tmux attach -t \(target.session)"
                     end tell
                 end tell
                 """

@@ -450,7 +450,7 @@ class HookSocketServer {
         defer { connectionsLock.unlock() }
 
         if activeConnections >= SocketConfig.maxConcurrentConnections {
-            logger.warning("Rate limit reached: \(activeConnections) active connections")
+            logger.warning("Rate limit reached: \(self.activeConnections) active connections")
             return false
         }
 
