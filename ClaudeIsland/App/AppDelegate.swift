@@ -41,31 +41,13 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             return
         }
 
-        Mixpanel.initialize(token: "49814c1436104ed108f3fc4735228496")
+        // Always initialize Mixpanel (required to prevent crashes), but only track if enabled
+        initializeMixpanel()
 
-        let distinctId = getOrCreateDistinctId()
-        Mixpanel.mainInstance().identify(distinctId: distinctId)
-
-        let version = Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "unknown"
-        let build = Bundle.main.infoDictionary?["CFBundleVersion"] as? String ?? "unknown"
-        let osVersion = Foundation.ProcessInfo.processInfo.operatingSystemVersionString
-
-        Mixpanel.mainInstance().registerSuperProperties([
-            "app_version": version,
-            "build_number": build,
-            "macos_version": osVersion
-        ])
-
-        fetchAndRegisterClaudeVersion()
-
-        Mixpanel.mainInstance().people.set(properties: [
-            "app_version": version,
-            "build_number": build,
-            "macos_version": osVersion
-        ])
-
-        Mixpanel.mainInstance().track(event: "App Launched")
-        Mixpanel.mainInstance().flush()
+        // Only track analytics if user has opted in (defaults to false for privacy)
+        if AppSettings.analyticsEnabled {
+            trackAppLaunch()
+        }
 
         HookInstaller.installIfNeeded()
         NSApplication.shared.setActivationPolicy(.accessory)
@@ -92,9 +74,45 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     func applicationWillTerminate(_ notification: Notification) {
-        Mixpanel.mainInstance().flush()
+        if AppSettings.analyticsEnabled {
+            Mixpanel.mainInstance().flush()
+        }
         updateCheckTimer?.invalidate()
         screenObserver = nil
+    }
+
+    // MARK: - Analytics (Privacy-respecting)
+
+    /// Initialize Mixpanel SDK (required to prevent crashes when mainInstance() is called)
+    private func initializeMixpanel() {
+        Mixpanel.initialize(token: "49814c1436104ed108f3fc4735228496")
+    }
+
+    /// Track app launch and set user properties (only when analytics enabled)
+    private func trackAppLaunch() {
+        let distinctId = getOrCreateDistinctId()
+        Mixpanel.mainInstance().identify(distinctId: distinctId)
+
+        let version = Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "unknown"
+        let build = Bundle.main.infoDictionary?["CFBundleVersion"] as? String ?? "unknown"
+        let osVersion = Foundation.ProcessInfo.processInfo.operatingSystemVersionString
+
+        Mixpanel.mainInstance().registerSuperProperties([
+            "app_version": version,
+            "build_number": build,
+            "macos_version": osVersion
+        ])
+
+        fetchAndRegisterClaudeVersion()
+
+        Mixpanel.mainInstance().people.set(properties: [
+            "app_version": version,
+            "build_number": build,
+            "macos_version": osVersion
+        ])
+
+        Mixpanel.mainInstance().track(event: "App Launched")
+        Mixpanel.mainInstance().flush()
     }
 
     private func getOrCreateDistinctId() -> String {

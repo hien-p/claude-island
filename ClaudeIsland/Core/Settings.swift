@@ -38,6 +38,7 @@ enum AppSettings {
 
     private enum Keys {
         static let notificationSound = "notificationSound"
+        static let analyticsEnabled = "analyticsEnabled"
     }
 
     // MARK: - Notification Sound
@@ -53,6 +54,22 @@ enum AppSettings {
         }
         set {
             defaults.set(newValue.rawValue, forKey: Keys.notificationSound)
+        }
+    }
+
+    // MARK: - Analytics (Privacy)
+
+    /// Whether analytics tracking is enabled (defaults to false for privacy)
+    static var analyticsEnabled: Bool {
+        get {
+            // Default to false (opt-out by default for better privacy)
+            if defaults.object(forKey: Keys.analyticsEnabled) == nil {
+                return false
+            }
+            return defaults.bool(forKey: Keys.analyticsEnabled)
+        }
+        set {
+            defaults.set(newValue, forKey: Keys.analyticsEnabled)
         }
     }
 }

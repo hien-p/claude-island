@@ -120,8 +120,8 @@ actor SessionStore {
         let isNewSession = sessions[sessionId] == nil
         var session = sessions[sessionId] ?? createSession(from: event)
 
-        // Track new session in Mixpanel
-        if isNewSession {
+        // Track new session in Mixpanel (only if analytics enabled)
+        if isNewSession && AppSettings.analyticsEnabled {
             Mixpanel.mainInstance().track(event: "Session Started")
         }
 

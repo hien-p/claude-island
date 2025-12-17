@@ -174,7 +174,9 @@ class HookSocketServer {
             return
         }
 
-        chmod(Self.socketPath, 0o777)
+        // Security fix: Use restrictive permissions (owner-only access)
+        // instead of world-writable 0o777 to prevent unauthorized socket access
+        chmod(Self.socketPath, 0o700)
 
         guard listen(serverSocket, 10) == 0 else {
             logger.error("Failed to listen: \(errno)")
