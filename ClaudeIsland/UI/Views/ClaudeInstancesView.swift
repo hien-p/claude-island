@@ -22,17 +22,98 @@ struct ClaudeInstancesView: View {
 
     // MARK: - Empty State
 
-    private var emptyState: some View {
-        VStack(spacing: 8) {
-            Text("No sessions")
-                .font(.system(size: 13, weight: .medium))
-                .foregroundColor(.white.opacity(0.4))
+    @State private var isStartButtonHovered: Bool = false
 
-            Text("Run claude in terminal")
-                .font(.system(size: 11))
-                .foregroundColor(.white.opacity(0.25))
+    private var emptyState: some View {
+        VStack(spacing: 16) {
+            // Icon
+            Image(systemName: "terminal.fill")
+                .font(.system(size: 28))
+                .foregroundColor(.white.opacity(0.3))
+
+            // Title
+            VStack(spacing: 4) {
+                Text("No active sessions")
+                    .font(.system(size: 14, weight: .medium))
+                    .foregroundColor(.white.opacity(0.6))
+
+                Text("Start Claude Code in tmux to chat")
+                    .font(.system(size: 12))
+                    .foregroundColor(.white.opacity(0.35))
+            }
+
+            // Start button - opens terminal with tmux
+            Button {
+                openTerminalWithTmux()
+            } label: {
+                HStack(spacing: 6) {
+                    Image(systemName: "play.fill")
+                        .font(.system(size: 10, weight: .medium))
+                    Text("Start Claude in tmux")
+                        .font(.system(size: 12, weight: .medium))
+                }
+                .foregroundColor(isStartButtonHovered ? .black : .white.opacity(0.9))
+                .padding(.horizontal, 16)
+                .padding(.vertical, 10)
+                .background(
+                    RoundedRectangle(cornerRadius: 10)
+                        .fill(isStartButtonHovered ? Color.white.opacity(0.95) : Color.white.opacity(0.15))
+                )
+            }
+            .buttonStyle(.plain)
+            .onHover { isStartButtonHovered = $0 }
+
+            // Quick tip
+            VStack(spacing: 4) {
+                Text("Or run manually:")
+                    .font(.system(size: 10))
+                    .foregroundColor(.white.opacity(0.3))
+
+                Text("tmux new -s claude && claude")
+                    .font(.system(size: 10, design: .monospaced))
+                    .foregroundColor(.white.opacity(0.4))
+                    .padding(.horizontal, 8)
+                    .padding(.vertical, 4)
+                    .background(
+                        RoundedRectangle(cornerRadius: 4)
+                            .fill(Color.white.opacity(0.05))
+                    )
+            }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .padding(.vertical, 20)
+    }
+
+    /// Open terminal with tmux and claude
+    private func openTerminalWithTmux() {
+        // Try iTerm first, fallback to Terminal.app
+        let iTermScript = """
+        tell application "iTerm"
+            activate
+            create window with default profile
+            tell current session of current window
+                write text "tmux new -s claude"
+            end tell
+        end tell
+        """
+
+        let terminalScript = """
+        tell application "Terminal"
+            activate
+            do script "tmux new -s claude"
+        end tell
+        """
+
+        // Check if iTerm is installed
+        let iTermPath = "/Applications/iTerm.app"
+        let script = FileManager.default.fileExists(atPath: iTermPath) ? iTermScript : terminalScript
+
+        DispatchQueue.global(qos: .userInitiated).async {
+            var error: NSDictionary?
+            if let appleScript = NSAppleScript(source: script) {
+                appleScript.executeAndReturnError(&error)
+            }
+        }
     }
 
     // MARK: - Instances List

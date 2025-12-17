@@ -8,6 +8,7 @@
 import AppKit
 import CoreGraphics
 import SwiftUI
+import UserNotifications
 
 // Corner radius constants
 private let cornerRadiusInsets = (
@@ -22,6 +23,7 @@ struct NotchView: View {
     @ObservedObject private var updateManager = UpdateManager.shared
     @State private var previousPendingIds: Set<String> = []
     @State private var previousWaitingForInputIds: Set<String> = []
+    @State private var previousApprovalIds: Set<String> = []  // Track permission requests
     @State private var waitingForInputTimestamps: [String: Date] = [:]  // sessionId -> when it entered waitingForInput
     @State private var isVisible: Bool = false
     @State private var isHovering: Bool = false
@@ -207,6 +209,7 @@ struct NotchView: View {
         .onChange(of: sessionMonitor.instances) { _, instances in
             handleProcessingChange()
             handleWaitingForInputChange(instances)
+            handlePermissionRequestChange(instances)
         }
     }
 
@@ -484,6 +487,81 @@ struct NotchView: View {
         }
 
         previousWaitingForInputIds = currentIds
+    }
+
+    /// Handle permission request state changes - play sound and show notification
+    private func handlePermissionRequestChange(_ instances: [SessionState]) {
+        // Get sessions that are waiting for approval
+        let approvalSessions = instances.filter { $0.phase.isWaitingForApproval }
+        let currentIds = Set(approvalSessions.map { $0.stableId })
+        let newApprovalIds = currentIds.subtracting(previousApprovalIds)
+
+        // New permission request detected
+        if !newApprovalIds.isEmpty {
+            let newSessions = approvalSessions.filter { newApprovalIds.contains($0.stableId) }
+
+            // Play alert sound
+            Task {
+                let shouldPlaySound = await shouldPlayNotificationSound(for: newSessions)
+                if shouldPlaySound {
+                    await MainActor.run {
+                        // Play system alert sound (more attention-grabbing than notification sound)
+                        NSSound(named: "Basso")?.play()
+                    }
+                }
+            }
+
+            // Show macOS notification
+            for session in newSessions {
+                showPermissionNotification(for: session)
+            }
+
+            // Bounce the notch
+            DispatchQueue.main.async {
+                isBouncing = true
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) {
+                    isBouncing = false
+                }
+            }
+
+            // Auto-open notch if terminal is not focused
+            if viewModel.status == .closed &&
+               !TerminalVisibilityDetector.isTerminalVisibleOnCurrentSpace() {
+                viewModel.notchOpen(reason: .notification)
+            }
+        }
+
+        previousApprovalIds = currentIds
+    }
+
+    /// Show a macOS notification for permission request
+    private func showPermissionNotification(for session: SessionState) {
+        let center = UNUserNotificationCenter.current()
+
+        // Request permission first time
+        center.requestAuthorization(options: [.alert, .sound]) { granted, _ in
+            guard granted else { return }
+
+            let content = UNMutableNotificationContent()
+            content.title = "Permission Required"
+
+            if let toolName = session.pendingToolName {
+                content.body = "\(session.displayTitle): \(toolName) needs approval"
+            } else {
+                content.body = "\(session.displayTitle) needs your approval"
+            }
+
+            content.sound = .default
+            content.categoryIdentifier = "PERMISSION_REQUEST"
+
+            let request = UNNotificationRequest(
+                identifier: "permission-\(session.sessionId)",
+                content: content,
+                trigger: nil  // Deliver immediately
+            )
+
+            center.add(request)
+        }
     }
 
     /// Handle global hotkey (Cmd+Shift+C) - open notch and focus chat
