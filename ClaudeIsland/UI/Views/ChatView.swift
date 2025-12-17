@@ -435,14 +435,42 @@ struct ChatView: View {
 
     /// Dynamic height for multi-line input
     @State private var inputHeight: CGFloat = 36
+    @State private var showCopiedFeedback: Bool = false
 
     private var inputBar: some View {
+        Group {
+            if canSendMessages {
+                // Normal chat input when tmux is available
+                enabledInputBar
+            } else {
+                // Helper bar when tmux is not available
+                disabledInputBar
+            }
+        }
+        .padding(.horizontal, 16)
+        .padding(.vertical, 12)
+        .background(Color.black.opacity(0.2))
+        .overlay(alignment: .top) {
+            LinearGradient(
+                colors: [fadeColor.opacity(0), fadeColor.opacity(0.7)],
+                startPoint: .top,
+                endPoint: .bottom
+            )
+            .frame(height: 24)
+            .offset(y: -24) // Push above input bar
+            .allowsHitTesting(false)
+        }
+        .zIndex(1) // Render above message list
+    }
+
+    /// Input bar when chat is enabled (tmux available)
+    private var enabledInputBar: some View {
         HStack(alignment: .bottom, spacing: 10) {
             // Multi-line input with TextEditor
             ZStack(alignment: .topLeading) {
                 // Placeholder
                 if inputText.isEmpty {
-                    Text(canSendMessages ? "Message Claude... (⌘↩ to send)" : "Open Claude Code in tmux to enable messaging")
+                    Text("Message Claude... (⌘↩ to send)")
                         .font(.system(size: 13))
                         .foregroundColor(.white.opacity(0.3))
                         .padding(.horizontal, 14)
@@ -453,10 +481,9 @@ struct ChatView: View {
                 // Text input
                 TextEditor(text: $inputText)
                     .font(.system(size: 13))
-                    .foregroundColor(canSendMessages ? .white : .white.opacity(0.4))
+                    .foregroundColor(.white)
                     .scrollContentBackground(.hidden)
                     .focused($isInputFocused)
-                    .disabled(!canSendMessages)
                     .padding(.horizontal, 10)
                     .padding(.vertical, 6)
                     .frame(minHeight: 36, maxHeight: 120)
@@ -473,7 +500,7 @@ struct ChatView: View {
             }
             .background(
                 RoundedRectangle(cornerRadius: 16)
-                    .fill(Color.white.opacity(canSendMessages ? 0.08 : 0.04))
+                    .fill(Color.white.opacity(0.08))
                     .overlay(
                         RoundedRectangle(cornerRadius: 16)
                             .strokeBorder(Color.white.opacity(0.1), lineWidth: 1)
@@ -485,25 +512,103 @@ struct ChatView: View {
             } label: {
                 Image(systemName: "arrow.up.circle.fill")
                     .font(.system(size: 28))
-                    .foregroundColor(!canSendMessages || inputText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? .white.opacity(0.2) : .white.opacity(0.9))
+                    .foregroundColor(inputText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? .white.opacity(0.2) : .white.opacity(0.9))
             }
             .buttonStyle(.plain)
-            .disabled(!canSendMessages || inputText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+            .disabled(inputText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
         }
-        .padding(.horizontal, 16)
-        .padding(.vertical, 12)
-        .background(Color.black.opacity(0.2))
-        .overlay(alignment: .top) {
-            LinearGradient(
-                colors: [fadeColor.opacity(0), fadeColor.opacity(0.7)],
-                startPoint: .top,
-                endPoint: .bottom
+    }
+
+    /// Helper bar when chat is disabled (no tmux) - entire bar is clickable
+    @State private var isDisabledBarHovered: Bool = false
+
+    private var disabledInputBar: some View {
+        Button {
+            openTerminalWithTmux()
+        } label: {
+            HStack(spacing: 10) {
+                // Terminal icon
+                Image(systemName: "terminal")
+                    .font(.system(size: 14, weight: .medium))
+                    .foregroundColor(.white.opacity(0.6))
+
+                // Text
+                Text("Click to open tmux session")
+                    .font(.system(size: 13))
+                    .foregroundColor(.white.opacity(isDisabledBarHovered ? 0.9 : 0.5))
+
+                Spacer()
+
+                // Arrow indicator
+                Image(systemName: "arrow.right.circle.fill")
+                    .font(.system(size: 20))
+                    .foregroundColor(.white.opacity(isDisabledBarHovered ? 0.8 : 0.3))
+            }
+            .padding(.horizontal, 14)
+            .padding(.vertical, 12)
+            .background(
+                RoundedRectangle(cornerRadius: 20)
+                    .fill(Color.white.opacity(isDisabledBarHovered ? 0.1 : 0.05))
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 20)
+                            .strokeBorder(Color.white.opacity(isDisabledBarHovered ? 0.2 : 0.1), lineWidth: 1)
+                    )
             )
-            .frame(height: 24)
-            .offset(y: -24) // Push above input bar
-            .allowsHitTesting(false)
         }
-        .zIndex(1) // Render above message list
+        .buttonStyle(.plain)
+        .onHover { hovering in
+            withAnimation(.easeInOut(duration: 0.15)) {
+                isDisabledBarHovered = hovering
+            }
+        }
+    }
+
+    /// Copy tmux command to clipboard
+    private func copyTmuxCommand() {
+        let command = "tmux new -s claude -c '\(session.cwd)' \\; send-keys 'claude' Enter"
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(command, forType: .string)
+
+        // Show feedback
+        withAnimation(.easeInOut(duration: 0.2)) {
+            showCopiedFeedback = true
+        }
+
+        // Reset after 2 seconds
+        DispatchQueue.main.asyncAfter(deadline: .now() + 2) {
+            withAnimation(.easeInOut(duration: 0.2)) {
+                showCopiedFeedback = false
+            }
+        }
+    }
+
+    /// Open terminal with tmux command
+    private func openTerminalWithTmux() {
+        let cwd = session.cwd.replacingOccurrences(of: "'", with: "'\\''")
+
+        // Try iTerm first, fallback to Terminal.app
+        let iTermScript = """
+        tell application "iTerm"
+            activate
+            create window with default profile
+            tell current session of current window
+                write text "cd '\(cwd)' && tmux new -s claude"
+            end tell
+        end tell
+        """
+
+        let terminalScript = """
+        tell application "Terminal"
+            activate
+            do script "cd '\(cwd)' && tmux new -s claude"
+        end tell
+        """
+
+        // Check if iTerm is installed
+        let iTermPath = "/Applications/iTerm.app"
+        let script = FileManager.default.fileExists(atPath: iTermPath) ? iTermScript : terminalScript
+
+        runAppleScript(script)
     }
 
     // MARK: - Approval Bar
